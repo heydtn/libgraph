@@ -4,7 +4,7 @@ defmodule Graph.Pathfinding do
   """
   import Graph.Utils, only: [vertex_id: 1, edge_weight: 3]
 
-  @type heuristic_fun :: ((Graph.vertex) -> integer)
+  @type heuristic_fun :: (Graph.vertex() -> integer)
 
   @doc """
   Finds the shortest path between `a` and `b` as a list of vertices.
@@ -14,9 +14,9 @@ defmodule Graph.Pathfinding do
   which path to explore next. The cost function in Dijkstra's algorithm is
   `weight(E(A, B))+lower_bound(E(A, B))` where `lower_bound(E(A, B))` is always 0.
   """
-  @spec dijkstra(Graph.t, Graph.vertex, Graph.vertex) :: [Graph.vertex] | nil
-  def dijkstra(%Graph{} = g, a, b) do
-    a_star(g, a, b, fn _v -> 0 end)
+  @spec dijkstra(Graph.t(), Graph.vertex()) :: Graph.t()
+  def dijkstra(%Graph{} = g, a) do
+    a_star(g, a, fn _v -> 0 end)
   end
 
   @doc """
@@ -31,102 +31,99 @@ defmodule Graph.Pathfinding do
   The `dijkstra` function is simply `a_star` where the heuristic function
   always returns 0, and thus the next vertex is chosen based on the weight of
   the edge between it and the current vertex.
-  """
-  @spec a_star(Graph.t, Graph.vertex, Graph.vertex, heuristic_fun) :: [Graph.vertex] | nil
-  def a_star(%Graph{vertices: vs, out_edges: oe} = g, a, b, hfun) when is_function(hfun, 1) do
-    with a_id <- vertex_id(a),
-         b_id <- vertex_id(b),
-         {:ok, a_out} <- Map.fetch(oe, a_id) do
-      tree = Graph.new() |> Graph.add_vertex(a_id)
-      q = PriorityQueue.new()
 
-      q =
-        a_out
-        |> Stream.map(fn id -> {id, cost(g, a_id, id, hfun)} end)
-        |> Enum.reduce(q, fn {id, cost}, q ->
-          PriorityQueue.push(q, {a_id, id, edge_weight(g, a_id, id)}, cost)
+
+  NATE HELP:
+  Graph g has vertices: %{ vertex1_hash => vertex1_name }
+  Tree has verticex %{ vertex2_hash => vertex1_hash }
+  """
+  @spec a_star(Graph.t(), Graph.vertex(), heuristic_fun) :: Graph.t()
+  def a_star(%Graph{vertices: vertices, out_edges: out_edges} = graph, a, hfun)
+      when is_function(hfun, 1) do
+    with a_id <- vertex_id(a),
+         {:ok, vertex_a_out_edges} <- Map.fetch(out_edges, a_id) do
+      shortest_path_tree =
+        Graph.new()
+        |> Graph.add_vertex(a_id)
+
+      initialized_queue =
+        Enum.reduce(vertex_a_out_edges, PriorityQueue.new(), fn b_id, queue ->
+          queue_cost = calculate_cost(graph, a_id, b_id, hfun)
+          a_to_b_weight = edge_weight(graph, a_id, b_id)
+
+          PriorityQueue.push(
+            queue,
+            {a_id, b_id, a_to_b_weight},
+            queue_cost
+          )
         end)
 
-      case do_bfs(q, g, b_id, tree, hfun) do
-        nil ->
-          nil
+      complete_spt =
+        do_bfs(
+          initialized_queue,
+          graph,
+          shortest_path_tree,
+          hfun
+        )
 
-        path when is_list(path) ->
-          for id <- path, do: Map.get(vs, id)
-      end
+      id_graph_to_original(complete_spt, vertices)
     else
-      _ -> 
+      _ ->
         nil
-    end
-  end
-
-  @doc """
-  Finds all paths between `a` and `b`, each path as a list of vertices.
-  Returns `nil` if no path can be found.
-  """
-  @spec all(Graph.t, Graph.vertex, Graph.vertex) :: [Graph.vertex]
-  def all(%Graph{vertices: vs, out_edges: oe} = g, a, b) do
-    with a_id <- vertex_id(a),
-         b_id <- vertex_id(b),
-         {:ok, a_out} <- Map.fetch(oe, a_id) do
-      case dfs(g, a_out, b_id, [a_id], []) do
-        [] ->
-          []
-
-        paths ->
-          paths
-          |> Enum.map(fn path -> Enum.map(path, &Map.get(vs, &1)) end)
-      end
-    else
-      _ -> []
     end
   end
 
   ## Private
 
-  defp cost(%Graph{vertices: vs} = g, v1_id, v2_id, hfun) do
-    edge_weight(g, v1_id, v2_id) + hfun.(Map.get(vs, v2_id))
+  defp calculate_cost(%Graph{vertices: vertices} = g, v1_id, v2_id, hfun) do
+    edge_weight(g, v1_id, v2_id) + hfun.(Map.get(vertices, v2_id))
   end
 
-  defp do_bfs(q, %Graph{out_edges: oe} = g, target_id, %Graph{vertices: vs_tree} = tree, hfun) do
-    case PriorityQueue.pop(q) do
-      {{:value, {v_id, ^target_id, _}}, _q1} ->
-        v_id_tree = Graph.Utils.vertex_id(v_id)
-        construct_path(v_id_tree, tree, [target_id])
+  defp do_bfs(
+         queue,
+         %Graph{out_edges: oe} = graph,
+         %Graph{vertices: spt_vertices} = shortest_path_tree,
+         hfun
+       ) do
+    case PriorityQueue.pop(queue) do
+      {{:value, {a_id, b_id, a_to_b_weight}}, remaining_queue} ->
+        b_id_in_spt = Graph.Utils.vertex_id(b_id)
 
-      {{:value, {v1_id, v2_id, v2_acc_weight}}, q1} ->
-        v2_id_tree = Graph.Utils.vertex_id(v2_id)
-
-        if Map.has_key?(vs_tree, v2_id_tree) do
-          do_bfs(q1, g, target_id, tree, hfun)
+        if Map.has_key?(spt_vertices, b_id_in_spt) do
+          do_bfs(remaining_queue, graph, shortest_path_tree, hfun)
         else
-          case Map.get(oe, v2_id) do
+          case Map.get(oe, b_id) do
             nil ->
-              do_bfs(q1, g, target_id, tree, hfun)
+              updated_shortest_path_tree =
+                shortest_path_tree
+                |> Graph.add_vertex(b_id)
+                |> Graph.add_edge(b_id, a_id)
 
-            v2_out ->
-              tree =
-                tree
-                |> Graph.add_vertex(v2_id)
-                |> Graph.add_edge(v2_id, v1_id)
+              do_bfs(remaining_queue, graph, updated_shortest_path_tree, hfun)
 
-              q2 =
-                v2_out
-                |> Enum.map(fn id -> {id, v2_acc_weight + cost(g, v2_id, id, hfun)} end)
-                |> Enum.reduce(q1, fn {id, cost}, q ->
+            b_out ->
+              updated_shortest_path_tree =
+                shortest_path_tree
+                |> Graph.add_vertex(b_id)
+                |> Graph.add_edge(b_id, a_id)
+
+              new_queue =
+                Enum.reduce(b_out, remaining_queue, fn c_id, queue_acc ->
+                  queue_cost = a_to_b_weight + calculate_cost(graph, b_id, c_id, hfun)
+
                   PriorityQueue.push(
-                    q,
-                    {v2_id, id, v2_acc_weight + edge_weight(g, v2_id, id)},
-                    cost
+                    queue_acc,
+                    {b_id, c_id, a_to_b_weight + edge_weight(graph, b_id, c_id)},
+                    queue_cost
                   )
                 end)
 
-              do_bfs(q2, g, target_id, tree, hfun)
+              do_bfs(new_queue, graph, updated_shortest_path_tree, hfun)
           end
         end
 
       {:empty, _} ->
-        nil
+        shortest_path_tree
     end
   end
 
@@ -143,35 +140,25 @@ defmodule Graph.Pathfinding do
     end
   end
 
-  defp dfs(%Graph{} = g, neighbors, target_id, path, paths) when is_list(paths) do
-    {paths, visited} =
-      if MapSet.member?(neighbors, target_id) do
-        {[Enum.reverse([target_id | path]) | paths], [target_id | path]}
-      else
-        {paths, path}
-      end
+  defp id_graph_to_original(
+         %Graph{edges: edges, vertices: vertices},
+         vs
+       ) do
+    collected_vertices =
+      Enum.reduce(vertices, Graph.new(), fn {_orig, vertex}, graph ->
+        Graph.add_vertex(graph, Map.get(vs, vertex))
+      end)
 
-    neighbors = MapSet.difference(neighbors, MapSet.new(visited))
-    do_dfs(g, MapSet.to_list(neighbors), target_id, path, paths)
-  end
+    final_graph =
+      edges
+      |> Map.keys()
+      |> Enum.reduce(collected_vertices, fn {v_from, v_to}, graph ->
+        original_from = Map.get(vs, Map.get(vertices, v_from))
+        original_to = Map.get(vs, Map.get(vertices, v_to))
 
-  defp do_dfs(_g, [], _target_id, _path, paths) when is_list(paths) do
-    paths
-  end
+        Graph.add_edge(graph, Graph.Edge.new(original_from, original_to))
+      end)
 
-  defp do_dfs(%Graph{out_edges: oe} = g, [next_neighbor_id | neighbors], target_id, path, acc) do
-    case Map.get(oe, next_neighbor_id) do
-      nil ->
-        do_dfs(g, neighbors, target_id, path, acc)
-
-      next_neighbors ->
-        case dfs(g, next_neighbors, target_id, [next_neighbor_id | path], acc) do
-          [] ->
-            do_dfs(g, neighbors, target_id, path, acc)
-
-          paths ->
-            do_dfs(g, neighbors, target_id, path, paths)
-        end
-    end
+    final_graph
   end
 end
